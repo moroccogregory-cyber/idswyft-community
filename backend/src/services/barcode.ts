@@ -330,7 +330,6 @@ export class BarcodeService {
       const ocrText = ocrData.raw_text || '';
       
       console.log(`📄 OCR text analysis: length=${ocrText.length}, hasIdNumber=${!!ocrData.parsed_data?.id_number}`);
-      console.log(`📄 OCR first 100 chars: "${ocrText.substring(0, 100)}"`);
       
       // If OCR text is completely empty, this might be a processing issue
       if (ocrText.length === 0) {
@@ -902,11 +901,11 @@ export class BarcodeService {
   }
 
   private extractBackOfIdStructuredData(ocrText: string): BackOfIdData {
-    console.log('🔧 Extracting structured data from OCR text...');
+    console.log('🔧 Extracting structured data from OCR text, length:', ocrText.length);
     
     // Clean the text
     const cleanText = ocrText.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
-    console.log('🔧 Cleaned OCR text:', cleanText.substring(0, 200) + '...');
+    console.log('🔧 Cleaned OCR text, length:', cleanText.length);
     
     const result: BackOfIdData = {
       parsed_data: {},
@@ -939,7 +938,7 @@ export class BarcodeService {
               !skipWords.some(word => normalizedCandidate.includes(word)) &&
               normalizedCandidate.length >= 6) {
             result.parsed_data!.id_number = normalizedCandidate;
-            console.log('✅ ID Number found:', result.parsed_data!.id_number);
+            console.log('✅ ID Number found: length=' + normalizedCandidate.length);
             break;
           }
         }

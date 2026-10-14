@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { crossValidate } from '../cross-validator/engine.js';
 import type { FrontExtractionResult, BackExtractionResult } from '@idswyft/shared';
 
@@ -187,5 +187,29 @@ describe('Cross-Validator Engine', () => {
     const result = crossValidate(makeFront({ full_name: 'JOHN DOE' }), back);
     // first_name='JOHN' + last_name='DOE' should match 'JOHN DOE'
     expect(result.field_scores.full_name.score).toBe(1.0);
+  });
+
+  describe('PII redaction in logs', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('never logs the raw id_number — only presence/length', () => {
+      const idNumber = 'AB1234567';
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      crossValidate(makeFront({ id_number: idNumber }), makeBack({ id_number: idNumber }));
+
+      const loggedLines = logSpy.mock.calls.map((args) => args.join(' '));
+      const dlLine = loggedLines.find((line) => line.includes('id_number:'));
+
+      expect(dlLine).toBeDefined();
+      expect(dlLine).not.toContain(idNumber);
+      expect(dlLine).toMatch(/present=true, length=\d+/);
+
+      // Defense in depth: assert the raw PII value never appears in ANY logged line.
+      for (const line of loggedLines) {
+        expect(line).not.toContain(idNumber);
+      }
+    });
   });
 });

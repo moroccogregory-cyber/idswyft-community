@@ -55,6 +55,15 @@ function extractBackField(payload: Record<string, unknown>, field: string): stri
 }
 
 /**
+ * Describe a field value for debug logging without exposing raw PII.
+ * Never return the raw value — only presence/length so logs stay audit-safe.
+ */
+function describeFieldForLog(field: string, value: string): string {
+  const trimmed = value?.trim() ?? '';
+  return trimmed ? `present=true, length=${trimmed.length}` : 'present=false, length=0';
+}
+
+/**
  * Check if a document expiry date is in the past.
  */
 function isExpired(frontExpiry: string, backExpiry: string): boolean {
@@ -124,7 +133,7 @@ export function crossValidate(
       // Non-critical field missing on one side — skip, don't penalize
       fieldScores[field] = { score: 0, passed: false, weight: config.weight };
       console.log(`⏭️  ${field} (w=${config.weight}, critical=false): SKIPPED (missing on ${!frontValue.trim() ? 'front' : 'back'})`);
-      console.log(`     front: "${frontValue}" | back: "${backValue}"`);
+      console.log(`     front: ${describeFieldForLog(field, frontValue)} | back: ${describeFieldForLog(field, backValue)}`);
       continue;
     }
 
@@ -143,7 +152,7 @@ export function crossValidate(
 
     const status = passed ? '✅' : (config.critical ? '❌ CRITICAL' : '⚠️');
     console.log(`${status} ${field} (w=${config.weight}, critical=${config.critical}): score=${score.toFixed(3)}, passed=${passed}`);
-    console.log(`     front: "${frontValue}" | back: "${backValue}"`);
+    console.log(`     front: ${describeFieldForLog(field, frontValue)} | back: ${describeFieldForLog(field, backValue)}`);
   }
 
   // ── DL Number Format Validation (weight 0 — supplementary signal) ──
@@ -156,7 +165,7 @@ export function crossValidate(
   if (dlValidation.verdict !== 'SKIP') {
     const dlIcon = dlValidation.verdict === 'PASS' ? '✅' : dlValidation.verdict === 'FAIL' ? '⚠️' : '🔍';
     console.log(`${dlIcon} dl_format_validation (w=0, supplementary): verdict=${dlValidation.verdict}`);
-    console.log(`     id_number: "${frontIdNumber}" | detail: ${dlValidation.detail}`);
+    console.log(`     id_number: present=${!!frontIdNumber}, length=${frontIdNumber?.length ?? 0} | detail: ${dlValidation.detail}`);
   }
 
   // ── Address Validation (weight 0 — supplementary signal) ──
@@ -177,7 +186,7 @@ export function crossValidate(
     };
     const addrIcon = addrVerdict === 'PASS' ? '✅' : addrVerdict === 'REVIEW' ? '🔍' : '⚠️';
     console.log(`${addrIcon} address_validation (w=0, supplementary): score=${addrScore.toFixed(3)}, verdict=${addrVerdict}`);
-    console.log(`     front: "${frontAddress}" | back: "${backAddress}"`);
+    console.log(`     front: ${describeFieldForLog('address', frontAddress)} | back: ${describeFieldForLog('address', backAddress)}`);
   }
 
   // Normalize score: only count fields that were actually compared
