@@ -233,7 +233,7 @@ if (config.storage.provider === 'local') {
 // Health check endpoint (bare /health for Railway health checks + /api/health for API consumers)
 app.get('/health', (req, res) => {
   res.json({
-    status: 'healthy',
+    status: 'ok',
     timestamp: new Date().toISOString(),
     version: APP_VERSION,
     environment: config.nodeEnv
