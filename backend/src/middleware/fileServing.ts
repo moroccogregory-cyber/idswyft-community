@@ -2,6 +2,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { Request, Response } from 'express';
 import config from '@/config/index.js';
+import { supabase } from '@/config/database.js';
 
 const UPLOADS_BASE = path.resolve(process.cwd(), 'uploads');
 
@@ -61,9 +62,55 @@ function mimeFromPath(filePath: string): string {
 }
 
 /**
+ * Look up which developer owns the document/selfie stored at the given
+ * DB-relative path (e.g. "uploads/documents/<file>"). Checks both the
+ * documents and selfies tables (each links to verification_requests,
+ * which carries developer_id). Returns null when no record references
+ * this path — callers must treat that as "cannot verify ownership".
+ */
+async function getOwningDeveloperId(dbFilePath: string): Promise<string | null> {
+  const { data: doc } = await supabase
+    .from('documents')
+    .select('verification_request_id')
+    .eq('file_path', dbFilePath)
+    .limit(1)
+    .maybeSingle();
+
+  const { data: selfie } = !doc
+    ? await supabase
+        .from('selfies')
+        .select('verification_request_id')
+        .eq('file_path', dbFilePath)
+        .limit(1)
+        .maybeSingle()
+    : { data: null };
+
+  const verificationRequestId = doc?.verification_request_id ?? selfie?.verification_request_id;
+  if (!verificationRequestId) return null;
+
+  const { data: verification } = await supabase
+    .from('verification_requests')
+    .select('developer_id')
+    .eq('id', verificationRequestId)
+    .maybeSingle();
+
+  return verification?.developer_id ?? null;
+}
+
+/**
  * Express handler that serves a file from the uploads directory.
  * Only registered when STORAGE_PROVIDER=local.
- * Requires API key authentication (applied in server.ts).
+ * Requires API key or admin/reviewer authentication (applied in server.ts).
+ *
+ * Authorization: documents and selfies are tenant-scoped data. A valid API key
+ * or reviewer session only proves the requester is SOME developer/reviewer —
+ * it does not prove they own the specific file being requested. We look up
+ * the owning developer_id via the documents/selfies → verification_requests
+ * chain and require it to match the requester's developer_id. Platform
+ * admins (req.user) are exempt — they are allowed cross-tenant access by
+ * design. Unknown paths (no owning record) are denied: a legitimate file
+ * always has a documents/selfies row, so an unmatched path is either stale
+ * or an attempt to probe the filesystem.
  *
  * When STORAGE_ENCRYPTION=true, reads via the StorageService so envelope-
  * encrypted bytes get decrypted before they reach the wire. Otherwise
@@ -84,6 +131,23 @@ export async function serveLocalFile(req: Request, res: Response): Promise<void>
   } catch {
     res.status(404).json({ error: 'File not found' });
     return;
+  }
+
+  // Platform admins (req.user) bypass per-document ownership checks by
+  // design — everyone else must own the document/selfie being requested.
+  if (!req.user) {
+    const requesterDeveloperId = req.reviewer?.developer_id ?? req.developer?.id ?? null;
+    if (!requesterDeveloperId) {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+
+    const dbFilePath = `uploads/${requestedPath}`;
+    const owningDeveloperId = await getOwningDeveloperId(dbFilePath);
+    if (!owningDeveloperId || owningDeveloperId !== requesterDeveloperId) {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
   }
 
   // When encryption is enabled, on-disk bytes are ciphertext — read through

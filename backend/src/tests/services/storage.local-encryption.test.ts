@@ -197,7 +197,11 @@ describe('fileServing middleware — encryption round-trip', () => {
     const { serveLocalFile } = await import('../../middleware/fileServing.js');
     const sentChunks: Buffer[] = [];
     const headers: Record<string, string> = {};
-    const req: any = { params: { 0: innerPath } };
+    // req.user marks this as a platform-admin request, which bypasses the
+    // per-document ownership check (see fileServing.ts) — this test is
+    // about the encryption round-trip, not authorization, so an admin
+    // caller keeps the scenario focused on what it's meant to verify.
+    const req: any = { params: { 0: innerPath }, user: { id: 'admin-1' } };
     const res: any = {
       status: () => res,
       json: () => res,
