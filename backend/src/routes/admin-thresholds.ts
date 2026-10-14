@@ -14,6 +14,80 @@ const router = Router();
 const thresholdManager = DynamicThresholdManager.getInstance();
 
 /**
+ * Allow-list of advanced_overrides keys that may be forwarded to
+ * DynamicThresholdManager.updateOrganizationThresholds. Each maps to a
+ * fractional (0-1) verification threshold. Any key not listed here is
+ * rejected rather than spread onto the update payload.
+ */
+const ALLOWED_ADVANCED_OVERRIDE_KEYS = [
+  'photoConsistency',
+  'faceMatchingProduction',
+  'faceMatchingSandbox',
+  'livenessProduction',
+  'livenessSandbox',
+  'crossValidation',
+  'qualityMinimum',
+  'ocrConfidence',
+  'pdf417Confidence'
+] as const;
+
+type AllowedAdvancedOverrideKey = typeof ALLOWED_ADVANCED_OVERRIDE_KEYS[number];
+
+/**
+ * Validates that a value is a finite number within [min, max] (inclusive).
+ */
+export function isNumberInRange(value: unknown, min: number, max: number): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
+}
+
+/**
+ * Validates auto_approve_threshold / manual_review_threshold, which are
+ * expressed as percentages (0-100).
+ */
+export function validateThresholdPercentages(
+  autoApproveThreshold: unknown,
+  manualReviewThreshold: unknown
+): string | null {
+  if (!isNumberInRange(autoApproveThreshold, 0, 100)) {
+    return 'auto_approve_threshold must be a number between 0 and 100';
+  }
+  if (!isNumberInRange(manualReviewThreshold, 0, 100)) {
+    return 'manual_review_threshold must be a number between 0 and 100';
+  }
+  if (manualReviewThreshold > autoApproveThreshold) {
+    return 'manual_review_threshold must not be greater than auto_approve_threshold';
+  }
+  return null;
+}
+
+/**
+ * Filters an arbitrary advanced_overrides payload down to the allow-listed
+ * keys, validating that each present value is a finite number in [0, 1].
+ * Returns an error message if an unknown key or an out-of-range value is
+ * present; otherwise returns the sanitized overrides object.
+ */
+export function sanitizeAdvancedOverrides(
+  advancedOverrides: Record<string, unknown>
+): { error: string } | { sanitized: Partial<Record<AllowedAdvancedOverrideKey, number>> } {
+  const sanitized: Partial<Record<AllowedAdvancedOverrideKey, number>> = {};
+
+  for (const key of Object.keys(advancedOverrides)) {
+    if (!(ALLOWED_ADVANCED_OVERRIDE_KEYS as readonly string[]).includes(key)) {
+      return { error: `Unknown advanced_overrides key: ${key}` };
+    }
+
+    const value = advancedOverrides[key];
+    if (!isNumberInRange(value, 0, 1)) {
+      return { error: `advanced_overrides.${key} must be a number between 0 and 1` };
+    }
+
+    sanitized[key as AllowedAdvancedOverrideKey] = value;
+  }
+
+  return { sanitized };
+}
+
+/**
  * GET /api/admin/thresholds
  * Get current threshold settings for organization
  */
@@ -108,7 +182,37 @@ router.put('/', authenticateJWT, requireAdminRole(['admin']), async (req, res) =
         error: { code: 'MISSING_THRESHOLDS', message: 'Auto-approve and manual review thresholds are required' }
       });
     }
-    
+
+    // Validate type/range of the core thresholds before touching the manager
+    const thresholdValidationError = validateThresholdPercentages(auto_approve_threshold, manual_review_threshold);
+    if (thresholdValidationError) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_THRESHOLDS', message: thresholdValidationError }
+      });
+    }
+
+    if (require_liveness !== undefined && typeof require_liveness !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_REQUIRE_LIVENESS', message: 'require_liveness must be a boolean' }
+      });
+    }
+
+    if (require_back_of_id !== undefined && typeof require_back_of_id !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_REQUIRE_BACK_OF_ID', message: 'require_back_of_id must be a boolean' }
+      });
+    }
+
+    if (max_verification_attempts !== undefined && !isNumberInRange(max_verification_attempts, 1, 10)) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_MAX_ATTEMPTS', message: 'max_verification_attempts must be a number between 1 and 10' }
+      });
+    }
+
     // Convert admin settings to threshold overrides
     let thresholdUpdates = thresholdManager.convertAdminSettingsToThresholds({
       auto_approve_threshold,
@@ -118,11 +222,27 @@ router.put('/', authenticateJWT, requireAdminRole(['admin']), async (req, res) =
       max_verification_attempts: max_verification_attempts ?? 3
     });
     
-    // Apply any advanced overrides if provided
-    if (advanced_overrides && typeof advanced_overrides === 'object') {
+    // Apply any advanced overrides if provided, restricted to an allow-list
+    // of known threshold keys (never spread arbitrary request body keys).
+    if (advanced_overrides !== undefined) {
+      if (typeof advanced_overrides !== 'object' || advanced_overrides === null || Array.isArray(advanced_overrides)) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_ADVANCED_OVERRIDES', message: 'advanced_overrides must be an object' }
+        });
+      }
+
+      const overridesResult = sanitizeAdvancedOverrides(advanced_overrides as Record<string, unknown>);
+      if ('error' in overridesResult) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_ADVANCED_OVERRIDES', message: overridesResult.error }
+        });
+      }
+
       thresholdUpdates = {
         ...thresholdUpdates,
-        ...advanced_overrides
+        ...overridesResult.sanitized
       };
     }
     
